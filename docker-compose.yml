@@ -1,0 +1,21 @@
+version: '3.8'
+services:
+  dev-db:
+    image: postgres:latest
+    ports:
+      - 5434:5432
+    environment:
+      POSTGRES_USER: postgres-admin
+      POSTGRES_PASSWORD: 8BlbjDCEEpk4a27n5sWh3PRC3O9y0xgz
+      POSTGRES_DB: sponsors
+    networks:
+      - sponsor-finder
+  redis-dev:
+    image: redis:latest
+    ports:
+      - 6379:6379
+    networks:
+      - sponsor-finder
+
+networks:
+  sponsor-finder:
