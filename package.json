@@ -31,6 +31,7 @@
     "cheerio": "1.0.0-rc.12",
     "crypto": "^1.0.1",
     "csv-parse": "^5.5.5",
+    "node-telegram-bot-api": "^0.65.1",
     "reflect-metadata": "^0.1.13",
     "rxjs": "^7.8.1"
   },
