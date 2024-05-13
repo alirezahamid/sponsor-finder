@@ -10,6 +10,7 @@ import { OrganizationModule } from './organization/organization.module';
 import { TelegramService } from './telegram/telegram.service';
 import { OrganizationService } from './organization/organization.service';
 import { ConfigModule } from '@nestjs/config';
+import { ThrottlerModule } from '@nestjs/throttler';
 
 @Module({
   imports: [
@@ -18,6 +19,12 @@ import { ConfigModule } from '@nestjs/config';
       envFilePath: '.env',
       expandVariables: true,
     }),
+    ThrottlerModule.forRoot([
+      {
+        ttl: 60000,
+        limit: 10,
+      },
+    ]),
     ScheduleModule.forRoot(),
     PrismaModule,
     ScraperModule,
