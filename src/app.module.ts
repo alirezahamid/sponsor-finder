@@ -9,9 +9,15 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { OrganizationModule } from './organization/organization.module';
 import { TelegramService } from './telegram/telegram.service';
 import { OrganizationService } from './organization/organization.service';
+import { ConfigModule } from '@nestjs/config';
 
 @Module({
   imports: [
+    ConfigModule.forRoot({
+      isGlobal: true,
+      envFilePath: '.env',
+      expandVariables: true,
+    }),
     ScheduleModule.forRoot(),
     PrismaModule,
     ScraperModule,

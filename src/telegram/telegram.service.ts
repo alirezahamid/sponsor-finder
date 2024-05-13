@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import * as TelegramBot from 'node-telegram-bot-api';
 import { OrganizationService } from 'src/organization/organization.service';
 
@@ -7,8 +8,14 @@ export class TelegramService {
   private readonly bot: TelegramBot;
   private commandHandlers: Map<string, (chatId: number, text?: string) => void>;
 
-  constructor(private organization: OrganizationService) {
-    const token = '7129071293:AAFC0QT8eECl88VeYWsKS7Bx2gBR_KG7Gl4';
+  constructor(
+    private organization: OrganizationService,
+    private configService: ConfigService,
+  ) {
+    const token = this.configService.get<string>('TELEGRAM_BOT_TOKEN');
+    if (!token) {
+      throw new Error('TELEGRAM_BOT_TOKEN is not set in .env file');
+    }
     this.bot = new TelegramBot(token, { polling: true });
 
     this.initializeCommandHandlers();
