@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
 import { parse } from 'csv-parse';
 import * as fs from 'fs';
@@ -6,6 +6,7 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import * as stream from 'stream';
 import { promisify } from 'util';
 import * as cheerio from 'cheerio';
+import { Cron } from '@nestjs/schedule';
 
 @Injectable()
 export class ScraperService {
@@ -14,9 +15,11 @@ export class ScraperService {
 
   constructor(private prisma: PrismaService) {}
 
-  // async onModuleInit() {
-  //   await this.downloadAndProcessCSV();
-  // }
+  @Cron('0 0 */2 * *') // Cron expression for every 2 days at midnight
+  async handleCron() {
+    this.logger.debug('Running scheduled CSV download and processing');
+    await this.downloadAndProcessCSV();
+  }
 
   async scrapeForCSVLink(): Promise<string> {
     const url =
