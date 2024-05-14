@@ -59,7 +59,17 @@ export class ScraperService {
 
     const records = [];
     fs.createReadStream(path)
-      .pipe(parse({ columns: true, trim: true }))
+      .pipe(
+        parse({
+          columns: true,
+          trim: true,
+          skip_empty_lines: true,
+          relax_quotes: true,
+        }),
+      )
+      .on('error', (err) => {
+        console.error(`Error parsing CSV: ${err.message}`);
+      })
       .on('data', (data) => records.push(data))
       .on('end', async () => {
         await this.insertRecords(records);

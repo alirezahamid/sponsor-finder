@@ -3,17 +3,27 @@ services:
   dev-db:
     image: postgres:latest
     ports:
-      - 5434:5432
+      - 5432:5432
     environment:
       POSTGRES_USER: postgres-admin
       POSTGRES_PASSWORD: 8BlbjDCEEpk4a27n5sWh3PRC3O9y0xgz
       POSTGRES_DB: sponsors
     networks:
       - sponsor-finder
-  redis-dev:
-    image: redis:latest
+  # redis-dev:
+  #   image: redis:latest
+  #   ports:
+  #     - 6379:6379
+  #   networks:
+  #     - sponsor-finder
+  nest-app:
+    build: .
     ports:
-      - 6379:6379
+      - 8888:8888
+    env_file: .env
+    depends_on:
+      - dev-db
+      - redis-dev
     networks:
       - sponsor-finder
 
