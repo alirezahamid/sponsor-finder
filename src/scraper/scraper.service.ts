@@ -21,6 +21,10 @@ export class ScraperService {
     await this.downloadAndProcessCSV();
   }
 
+  // async onModuleInit() {
+  //   await this.downloadAndProcessCSV();
+  // }
+
   async scrapeForCSVLink(): Promise<string> {
     const url =
       'https://www.gov.uk/government/publications/register-of-licensed-sponsors-workers';
