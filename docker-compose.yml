@@ -23,7 +23,6 @@ services:
     env_file: .env
     depends_on:
       - dev-db
-      - redis-dev
     networks:
       - sponsor-finder
 
