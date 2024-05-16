@@ -18,8 +18,9 @@
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
-    "prisma:dev:deploy": "prisma migrate deploy",
-    "prisma:dev:migrate": "prisma migrate dev"
+    "prisma:dev:deploy": "npx prisma migrate deploy",
+    "prisma:dev:migrate": "npx prisma migrate dev",
+    "prisma:generate": "npx prisma generate"
   },
   "dependencies": {
     "@nestjs/common": "^10.0.0",
@@ -32,7 +33,6 @@
     "axios": "^1.6.8",
     "cheerio": "1.0.0-rc.12",
     "crypto": "^1.0.1",
-    "csurf": "^1.11.0",
     "csv-parse": "^5.5.5",
     "node-telegram-bot-api": "^0.65.1",
     "reflect-metadata": "^0.1.13",
