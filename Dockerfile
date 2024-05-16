@@ -22,7 +22,7 @@ RUN pnpm prisma:generate
 COPY . .
 
 # Expose the application port
-EXPOSE 8888
+EXPOSE 8000
 
 # Run the application
 CMD ["pnpm", "start:prod"]
