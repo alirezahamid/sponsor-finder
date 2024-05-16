@@ -11,6 +11,10 @@ export class OrganizationController {
     @Query('limit') limit: number = 10,
     @Query('search') search: string,
   ) {
-    return this.organizationService.getOrganizations(page, limit, search);
+    return this.organizationService.getOrganizations(
+      Number(page),
+      Number(limit),
+      search,
+    );
   }
 }

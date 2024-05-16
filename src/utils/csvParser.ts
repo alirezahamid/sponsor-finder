@@ -9,35 +9,29 @@ import * as stream from 'stream';
 
 const logger = new Logger('CsvParser');
 const pipeline = promisify(stream.pipeline);
-export async function parseCSV(response: any): Promise<OrganizationRecord[]> {
-  const records: OrganizationRecord[] = [];
-  const path = './tmp/csv-download.csv';
-  const writer = fs.createWriteStream(path);
 
-  await pipeline(response.data, writer);
-  const parser = fs
-    .createReadStream(path)
-    .pipe(
-      parse({
-        columns: (header) => header.map((column) => column.trim()), // This line ensures headers are trimmed of any excess whitespace
-        trim: true,
-        skip_empty_lines: true,
-        cast: true,
-        cast_date: true,
-        relax_quotes: true,
-      }),
-    )
-    .on('error', (err) => {
-      logger.error(`Error parsing CSV: ${err.message}`);
-    });
+export async function parseCSV(
+  inputStream: stream.Readable,
+): Promise<OrganizationRecord[]> {
+  const records: OrganizationRecord[] = [];
+  const parser = inputStream.pipe(
+    parse({ columns: true, trim: true, skip_empty_lines: true }),
+  );
 
   for await (const record of parser) {
     records.push({
-      name: record['Organisation Name'],
-      townCity: record['Town/City'],
-      county: record['County'],
-      typeRating: record['Type & Rating'],
-      route: record['Route'],
+      name: String(record['Organisation Name']).trim(),
+      townCity:
+        typeof record['Town/City'] === 'string'
+          ? record['Town/City'].trim()
+          : '',
+      county:
+        typeof record['County'] === 'string' ? record['County'].trim() : '',
+      typeRating:
+        typeof record['Type & Rating'] === 'string'
+          ? record['Type & Rating'].trim()
+          : '',
+      route: typeof record['Route'] === 'string' ? record['Route'].trim() : '',
     });
   }
 

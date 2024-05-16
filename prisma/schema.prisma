@@ -25,4 +25,24 @@ model Organization {
   typeRating String?
   route      String?
   dataHash   String?  @unique
+
+  changes       OrganizationChange[]
+}
+
+model OrganizationChange {
+  id            Int  @id @default(autoincrement())
+  created_at    DateTime            @default(now())
+  type          ChangeType
+
+  oldData       Json?
+  newData       Json?
+
+  organization  Organization?       @relation(fields: [organizationId], references: [id])
+  organizationId Int?
+}
+
+enum ChangeType {
+  ADDED
+  UPDATED
+  REMOVED
 }

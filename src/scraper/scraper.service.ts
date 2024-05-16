@@ -4,7 +4,8 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { parseCSV, scrapeForCSVLink } from 'src/utils/csvParser';
 import { OrganizationRecord } from './interfaces/organization.interface';
 import * as crypto from 'crypto';
-import { Cron } from '@nestjs/schedule';
+import { Cron, CronExpression } from '@nestjs/schedule';
+import { ChangeType } from '@prisma/client';
 
 @Injectable()
 export class ScraperService {
@@ -13,7 +14,7 @@ export class ScraperService {
 
   constructor(private prisma: PrismaService) {}
 
-  @Cron('0 0 */2 * *') // Cron expression for every 2 days at midnight
+  @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT) // Cron expression for every 2 days at midnight
   async handleCron() {
     this.logger.debug('Running scheduled CSV download and processing');
     await this.downloadAndProcessCSV();
@@ -35,43 +36,117 @@ export class ScraperService {
       responseType: 'stream',
     });
 
-    const records = await parseCSV(response);
+    const records = await parseCSV(response.data);
     this.logger.debug(`Parsed ${records.length} records from CSV`);
-    await this.insertOrUpdateRecords(records);
+    await this.processRecords(records);
   }
 
-  async insertOrUpdateRecords(records: OrganizationRecord[]) {
+  async processRecords(records: OrganizationRecord[]) {
     this.logger.log(`Processing ${records.length} records...`);
 
-    const existingRecords = await this.prisma.organization.findMany({
-      select: { name: true, dataHash: true },
+    const existingRecords = await this.prisma.organization.findMany();
+    const existingMap = new Map(existingRecords.map((rec) => [rec.name, rec]));
+
+    const newRecords = new Set(records.map((rec) => rec.name));
+
+    // Track changes
+    const added = [];
+    const updated = [];
+    const removed = [];
+
+    // Detect added and updated records
+    for (const record of records) {
+      const normalizedData = this.normalizeRecord(record);
+      const dataHash = this.generateHash(normalizedData);
+      const existingRecord = existingMap.get(normalizedData.name);
+
+      if (!existingRecord) {
+        added.push({ newData: normalizedData });
+      } else if (existingRecord.dataHash !== dataHash) {
+        updated.push({ oldData: existingRecord, newData: normalizedData });
+      }
+    }
+
+    // Detect removed records
+    for (const [name, existingRecord] of existingMap.entries()) {
+      if (!newRecords.has(name)) {
+        removed.push({ oldData: existingRecord });
+      }
+    }
+
+    // Process changes
+    await this.storeChanges(added, updated, removed);
+    await this.updateMainTable(added, updated, removed);
+
+    this.logger.log(
+      `Processed ${added.length} added, ${updated.length} updated, and ${removed.length} removed records.`,
+    );
+  }
+
+  async storeChanges(added, updated, removed) {
+    const changeRecords = [];
+
+    for (const add of added) {
+      const organization = await this.prisma.organization.findUnique({
+        where: { name: add.newData.name },
+      });
+
+      changeRecords.push({
+        type: ChangeType.ADDED,
+        newData: add.newData,
+        organizationId: organization?.id,
+      });
+    }
+
+    for (const update of updated) {
+      const organization = await this.prisma.organization.findUnique({
+        where: { name: update.newData.name },
+      });
+
+      changeRecords.push({
+        type: ChangeType.UPDATED,
+        oldData: update.oldData,
+        newData: update.newData,
+        organizationId: organization?.id,
+      });
+    }
+
+    for (const remove of removed) {
+      const organization = await this.prisma.organization.findUnique({
+        where: { name: remove.oldData.name },
+      });
+
+      changeRecords.push({
+        type: ChangeType.REMOVED,
+        oldData: remove.oldData,
+        organizationId: organization?.id,
+      });
+    }
+
+    await this.prisma.organizationChange.createMany({ data: changeRecords });
+  }
+
+  async updateMainTable(added, updated, removed) {
+    const upserts = added.concat(updated).map((change) => {
+      const data = change.newData;
+      data.dataHash = this.generateHash(data);
+
+      return this.prisma.organization.upsert({
+        where: { name: data.name },
+        update: data,
+        create: data,
+      });
     });
-    const existingMap = new Map(
-      existingRecords.map((rec) => [rec.name, rec.dataHash]),
+
+    await this.prisma.$transaction(upserts);
+
+    const deletions = removed.map((change) =>
+      this.prisma.organization.delete({
+        where: { name: change.oldData.name },
+      }),
     );
 
-    const batches = this.createBatches(records, this.batchSize);
-    for (const batch of batches) {
-      const upserts = batch
-        .map((record) => {
-          const normalizedData = this.normalizeRecord(record);
-          const dataHash = this.generateHash(normalizedData);
-          if (existingMap.get(normalizedData.name) === dataHash) {
-            return null;
-          }
-
-          return this.prisma.organization.upsert({
-            where: { name: normalizedData.name },
-            update: { ...normalizedData, dataHash },
-            create: { ...normalizedData, dataHash },
-          });
-        })
-        .filter(Boolean);
-
-      await Promise.all(upserts);
-      this.logger.log(`Processed batch of ${upserts.length} records...`);
-    }
-    this.logger.log(`Imported ${records.length} records into the database.`);
+    await this.prisma.$transaction(deletions);
   }
 
   private createBatches(
@@ -94,12 +169,31 @@ export class ScraperService {
 
   private normalizeRecord(record: OrganizationRecord): OrganizationRecord {
     return {
-      name: String(record.name),
-      townCity: typeof record.townCity === 'string' ? record.townCity : '',
-      county: typeof record.county === 'string' ? record.county : '',
+      name: String(record['name']).trim(),
+      townCity:
+        typeof record['townCity'] === 'string' ? record['townCity'].trim() : '',
+      county:
+        typeof record['county'] === 'string' ? record['county'].trim() : '',
       typeRating:
-        typeof record.typeRating === 'string' ? record.typeRating : '',
-      route: typeof record.route === 'string' ? record.route : '',
+        typeof record['typeRating'] === 'string'
+          ? record['typeRating'].trim()
+          : '',
+      route: typeof record['route'] === 'string' ? record['route'].trim() : '',
     };
   }
 }
+
+// private normalizeRecord(record: OrganizationRecord): OrganizationRecord {
+//   return {
+//     name: String(record['name']).trim(),
+//     townCity:
+//       typeof record['townCity'] === 'string' ? record['townCity'].trim() : '',
+//     county:
+//       typeof record['county'] === 'string' ? record['county'].trim() : '',
+//     typeRating:
+//       typeof record['typeRating'] === 'string'
+//         ? record['typeRating'].trim()
+//         : '',
+//     route: typeof record['route'] === 'string' ? record['route'].trim() : '',
+//   };
+// }

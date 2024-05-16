@@ -30,6 +30,9 @@ export class OrganizationService {
       where,
       skip: (page - 1) * limit,
       take: limit,
+      include: {
+        changes: true,
+      },
     });
 
     const totalRecords = await this.prisma.organization.count({ where });
