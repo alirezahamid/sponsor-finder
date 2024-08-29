@@ -1,42 +1,37 @@
-import { Injectable, Logger } from '@nestjs/common';
-import axios from 'axios';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { parseCSV, scrapeForCSVLink } from 'src/utils/csvParser';
+import { parseCSV } from 'src/utils/csvParser';
 import { OrganizationRecord } from './interfaces/organization.interface';
 import * as crypto from 'crypto';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { ChangeType } from '@prisma/client';
+import * as fs from 'fs';
+import { Prisma } from '@prisma/client';
 
 @Injectable()
-export class ScraperService {
+export class ScraperService implements OnModuleInit {
   private readonly logger = new Logger(ScraperService.name);
   private readonly batchSize = 10000;
 
   constructor(private prisma: PrismaService) {}
 
-  @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT) // Cron expression for every 2 days at midnight
+  @Cron(CronExpression.EVERY_5_SECONDS)
   async handleCron() {
     this.logger.debug('Running scheduled CSV download and processing');
     await this.downloadAndProcessCSV();
   }
 
-  // async onModuleInit() {
-  //   this.logger.debug(
-  //     'Module initialization: Starting CSV download and processing',
-  //   );
-  //   await this.downloadAndProcessCSV();
-  // }
+  async onModuleInit() {
+    this.logger.debug(
+      'Module initialization: Starting CSV download and processing',
+    );
+    await this.downloadAndProcessCSV();
+  }
 
   async downloadAndProcessCSV() {
     this.logger.debug('Starting downloadAndProcessCSV');
-    const csvUrl = await scrapeForCSVLink();
-    const response = await axios({
-      method: 'GET',
-      url: csvUrl,
-      responseType: 'stream',
-    });
-
-    const records = await parseCSV(response.data);
+    const csvFilePath = './tmp/organizations.csv';
+    const inputStream = fs.createReadStream(csvFilePath);
+    const records = await parseCSV(inputStream);
     this.logger.debug(`Parsed ${records.length} records from CSV`);
     await this.processRecords(records);
   }
@@ -44,109 +39,111 @@ export class ScraperService {
   async processRecords(records: OrganizationRecord[]) {
     this.logger.log(`Processing ${records.length} records...`);
 
-    const existingRecords = await this.prisma.organization.findMany();
-    const existingMap = new Map(existingRecords.map((rec) => [rec.name, rec]));
-
-    const newRecords = new Set(records.map((rec) => rec.name));
-
-    // Track changes
-    const added = [];
-    const updated = [];
-    const removed = [];
-
-    // Detect added and updated records
-    for (const record of records) {
-      const normalizedData = this.normalizeRecord(record);
-      const dataHash = this.generateHash(normalizedData);
-      const existingRecord = existingMap.get(normalizedData.name);
-
-      if (!existingRecord) {
-        added.push({ newData: normalizedData });
-      } else if (existingRecord.dataHash !== dataHash) {
-        updated.push({ oldData: existingRecord, newData: normalizedData });
-      }
-    }
-
-    // Detect removed records
-    for (const [name, existingRecord] of existingMap.entries()) {
-      if (!newRecords.has(name)) {
-        removed.push({ oldData: existingRecord });
-      }
-    }
-
-    // Process changes
-    await this.storeChanges(added, updated, removed);
-    await this.updateMainTable(added, updated, removed);
-
-    this.logger.log(
-      `Processed ${added.length} added, ${updated.length} updated, and ${removed.length} removed records.`,
-    );
-  }
-
-  async storeChanges(added, updated, removed) {
-    const changeRecords = [];
-
-    for (const add of added) {
-      const organization = await this.prisma.organization.findUnique({
-        where: { name: add.newData.name },
-      });
-
-      changeRecords.push({
-        type: ChangeType.ADDED,
-        newData: add.newData,
-        organizationId: organization?.id,
-      });
-    }
-
-    for (const update of updated) {
-      const organization = await this.prisma.organization.findUnique({
-        where: { name: update.newData.name },
-      });
-
-      changeRecords.push({
-        type: ChangeType.UPDATED,
-        oldData: update.oldData,
-        newData: update.newData,
-        organizationId: organization?.id,
-      });
-    }
-
-    for (const remove of removed) {
-      const organization = await this.prisma.organization.findUnique({
-        where: { name: remove.oldData.name },
-      });
-
-      changeRecords.push({
-        type: ChangeType.REMOVED,
-        oldData: remove.oldData,
-        organizationId: organization?.id,
-      });
-    }
-
-    await this.prisma.organizationChange.createMany({ data: changeRecords });
-  }
-
-  async updateMainTable(added, updated, removed) {
-    const upserts = added.concat(updated).map((change) => {
-      const data = change.newData;
-      data.dataHash = this.generateHash(data);
-
-      return this.prisma.organization.upsert({
-        where: { name: data.name },
-        update: data,
-        create: data,
-      });
+    const existingRecords = await this.prisma.organization.findMany({
+      select: {
+        id: true,
+        name: true,
+        townCity: true,
+        county: true,
+        typeRating: true,
+        route: true,
+        dataHash: true,
+      },
     });
-
-    await this.prisma.$transaction(upserts);
-
-    const deletions = removed.map((change) =>
-      this.prisma.organization.delete({
-        where: { name: change.oldData.name },
-      }),
+    const existingMap = new Map(
+      existingRecords.map((rec) => [
+        rec.name,
+        {
+          id: rec.id,
+          name: rec.name,
+          townCity: rec.townCity,
+          county: rec.county,
+          typeRating: rec.typeRating,
+          route: rec.route,
+          dataHash: rec.dataHash,
+        },
+      ]),
     );
 
-    await this.prisma.$transaction(deletions);
+    const existingNames = new Set(existingRecords.map((rec) => rec.name));
+    const newNames = new Set(records.map((rec) => rec.name));
+
+    const removedNames = [...existingNames].filter(
+      (name) => !newNames.has(name),
+    );
+
+    const batches = this.createBatches(records, this.batchSize);
+    for (const batch of batches) {
+      const upserts = batch
+        .map((record) => {
+          const normalizedData = this.normalizeRecord(record);
+          const dataHash = this.generateHash(normalizedData);
+
+          const existingRecord = existingMap.get(normalizedData.name);
+
+          if (existingRecord) {
+            if (existingRecord.dataHash === dataHash) {
+              return null; // Skip if no changes
+            }
+
+            // Update existing record
+            return this.prisma.organization
+              .update({
+                where: { id: existingRecord.id },
+                data: { ...normalizedData, dataHash },
+              })
+              .then(() =>
+                this.prisma.organizationChange.create({
+                  data: {
+                    type: 'UPDATED',
+                    oldData: existingRecord,
+                    newData: normalizedData as unknown as Prisma.InputJsonValue,
+                    organizationId: existingRecord.id,
+                  },
+                }),
+              );
+          }
+
+          // Create new record
+          return this.prisma.organization
+            .create({
+              data: { ...normalizedData, dataHash },
+            })
+            .then((createdRecord) =>
+              this.prisma.organizationChange.create({
+                data: {
+                  type: 'ADDED',
+                  newData: normalizedData as unknown as Prisma.InputJsonValue,
+                  organizationId: createdRecord.id,
+                },
+              }),
+            );
+        })
+        .filter(Boolean);
+
+      await Promise.all(upserts);
+      this.logger.log(`Processed batch of ${upserts.length} records...`);
+    }
+
+    // Handle removed records
+    for (const name of removedNames) {
+      const existingRecord = existingMap.get(name);
+      if (existingRecord) {
+        await this.prisma.organizationChange.create({
+          data: {
+            type: 'REMOVED',
+            oldData: existingRecord,
+            organizationId: existingRecord.id,
+          },
+        });
+        await this.prisma.organization.delete({
+          where: { id: existingRecord.id },
+        });
+        this.logger.log(`Removed organization: ${name}`);
+      }
+    }
+
+    this.logger.log(`Processed ${records.length} records into the database.`);
   }
 
   private createBatches(
@@ -160,7 +157,7 @@ export class ScraperService {
     return batches;
   }
 
-  private generateHash(record: any): string {
+  private generateHash(record: OrganizationRecord): string {
     return crypto
       .createHash('sha256')
       .update(JSON.stringify(record))

@@ -7,7 +7,7 @@ import { PrismaService } from './prisma/prisma.service';
 import { ScraperModule } from './scraper/scraper.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import { OrganizationModule } from './organization/organization.module';
-import { TelegramService } from './telegram/telegram.service';
+// import { TelegramService } from './telegram/telegram.service';
 import { OrganizationService } from './organization/organization.service';
 import { ConfigModule } from '@nestjs/config';
 import { ThrottlerModule } from '@nestjs/throttler';
@@ -36,7 +36,7 @@ import { ThrottlerModule } from '@nestjs/throttler';
     ScraperService,
     PrismaService,
     OrganizationService,
-    TelegramService,
+    // TelegramService,
   ],
 })
 export class AppModule {}

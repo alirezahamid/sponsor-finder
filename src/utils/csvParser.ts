@@ -15,7 +15,12 @@ export async function parseCSV(
 ): Promise<OrganizationRecord[]> {
   const records: OrganizationRecord[] = [];
   const parser = inputStream.pipe(
-    parse({ columns: true, trim: true, skip_empty_lines: true }),
+    parse({
+      columns: true,
+      trim: true,
+      skip_empty_lines: true,
+      delimiter: '\t',
+    }),
   );
 
   for await (const record of parser) {
