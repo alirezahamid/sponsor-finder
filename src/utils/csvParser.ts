@@ -1,14 +1,14 @@
 import axios from 'axios';
 import { parse } from 'csv-parse';
-import * as fs from 'fs';
+// import * as fs from 'fs';
 import * as cheerio from 'cheerio';
 import { OrganizationRecord } from 'src/scraper/interfaces/organization.interface';
 import { Logger } from '@nestjs/common';
-import { promisify } from 'util';
+// import { promisify } from 'util';
 import * as stream from 'stream';
 
 const logger = new Logger('CsvParser');
-const pipeline = promisify(stream.pipeline);
+// const pipeline = promisify(stream.pipeline);
 
 export async function parseCSV(
   inputStream: stream.Readable,
@@ -19,7 +19,8 @@ export async function parseCSV(
       columns: true,
       trim: true,
       skip_empty_lines: true,
-      delimiter: '\t',
+      relax_column_count: true,
+      delimiter: ',',
     }),
   );
 

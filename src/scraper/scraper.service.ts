@@ -1,24 +1,17 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { parseCSV } from 'src/utils/csvParser';
+import { parseCSV, scrapeForCSVLink } from 'src/utils/csvParser';
 import { OrganizationRecord } from './interfaces/organization.interface';
 import * as crypto from 'crypto';
-import { Cron, CronExpression } from '@nestjs/schedule';
-import * as fs from 'fs';
+import axios from 'axios';
 import { Prisma } from '@prisma/client';
 
 @Injectable()
 export class ScraperService implements OnModuleInit {
   private readonly logger = new Logger(ScraperService.name);
-  private readonly batchSize = 10000;
+  private readonly batchSize = 1000;
 
   constructor(private prisma: PrismaService) {}
-
-  @Cron(CronExpression.EVERY_5_SECONDS)
-  async handleCron() {
-    this.logger.debug('Running scheduled CSV download and processing');
-    await this.downloadAndProcessCSV();
-  }
 
   async onModuleInit() {
     this.logger.debug(
@@ -28,18 +21,50 @@ export class ScraperService implements OnModuleInit {
   }
 
   async downloadAndProcessCSV() {
-    this.logger.debug('Starting downloadAndProcessCSV');
-    const csvFilePath = './tmp/organizations.csv';
-    const inputStream = fs.createReadStream(csvFilePath);
-    const records = await parseCSV(inputStream);
-    this.logger.debug(`Parsed ${records.length} records from CSV`);
-    await this.processRecords(records);
+    try {
+      const href = await scrapeForCSVLink();
+      this.logger.debug(`Scraped CSV link: ${href}`);
+
+      const response = await axios.get(href, { responseType: 'stream' });
+      const records = await parseCSV(response.data);
+      this.logger.debug(`Parsed ${records.length} records from CSV`);
+
+      await this.processRecords(records);
+    } catch (error) {
+      this.logger.error('Failed to download or process CSV:', error);
+    }
   }
 
   async processRecords(records: OrganizationRecord[]) {
     this.logger.log(`Processing ${records.length} records...`);
 
-    const existingRecords = await this.prisma.organization.findMany({
+    const existingRecords = await this.getExistingRecords();
+    const existingMap = new Map(existingRecords.map((rec) => [rec.name, rec]));
+
+    const batches = this.createBatches(records, this.batchSize);
+    let totalInserted = 0;
+    let totalSkipped = 0;
+
+    for (const batch of batches) {
+      await Promise.all(
+        batch.map((record) =>
+          this.processSingleRecord(record, existingMap).then((inserted) =>
+            inserted ? totalInserted++ : totalSkipped++,
+          ),
+        ),
+      );
+      this.logger.log(`Processed batch of ${batch.length} records...`);
+    }
+
+    await this.handleRemovedRecords(
+      existingMap,
+      new Set(records.map((rec) => rec.name)),
+    );
+    this.logger.log(`Inserted: ${totalInserted}, Skipped: ${totalSkipped}`);
+  }
+
+  private async getExistingRecords() {
+    return this.prisma.organization.findMany({
       select: {
         id: true,
         name: true,
@@ -50,100 +75,101 @@ export class ScraperService implements OnModuleInit {
         dataHash: true,
       },
     });
-    const existingMap = new Map(
-      existingRecords.map((rec) => [
-        rec.name,
-        {
-          id: rec.id,
-          name: rec.name,
-          townCity: rec.townCity,
-          county: rec.county,
-          typeRating: rec.typeRating,
-          route: rec.route,
-          dataHash: rec.dataHash,
-        },
-      ]),
-    );
+  }
 
-    const existingNames = new Set(existingRecords.map((rec) => rec.name));
-    const newNames = new Set(records.map((rec) => rec.name));
+  private async processSingleRecord(
+    record: OrganizationRecord,
+    existingMap: Map<string, any>,
+  ) {
+    const normalizedData = this.normalizeRecord(record);
+    const dataHash = this.generateHash(normalizedData);
+    const existingRecord = existingMap.get(normalizedData.name);
 
-    const removedNames = [...existingNames].filter(
+    if (existingRecord && existingRecord.dataHash === dataHash) {
+      return false; // Skip if no changes
+    }
+
+    try {
+      if (existingRecord) {
+        await this.updateRecord(existingRecord, normalizedData, dataHash);
+      } else {
+        await this.createOrUpdateRecord(normalizedData, dataHash);
+      }
+      return true;
+    } catch (error) {
+      this.logger.error(
+        `Error processing record "${normalizedData.name}": ${error.message}`,
+      );
+      return false;
+    }
+  }
+
+  private async updateRecord(
+    existingRecord: any,
+    normalizedData: OrganizationRecord,
+    dataHash: string,
+  ) {
+    await this.prisma.organization.update({
+      where: { id: existingRecord.id },
+      data: { ...normalizedData, dataHash },
+    });
+
+    await this.prisma.organizationChange.create({
+      data: {
+        type: 'UPDATED',
+        oldData: existingRecord as unknown as Prisma.InputJsonValue,
+        newData: normalizedData as unknown as Prisma.InputJsonValue,
+        organizationId: existingRecord.id,
+      },
+    });
+  }
+
+  private async createOrUpdateRecord(
+    normalizedData: OrganizationRecord,
+    dataHash: string,
+  ) {
+    await this.prisma.organization.upsert({
+      where: { name: normalizedData.name },
+      create: { ...normalizedData, dataHash },
+      update: { ...normalizedData, dataHash },
+    });
+
+    await this.prisma.organizationChange.create({
+      data: {
+        type: 'ADDED',
+        newData: normalizedData as unknown as Prisma.InputJsonValue,
+        organizationId: (await this.prisma.organization.findUnique({
+          where: { name: normalizedData.name },
+        }))!.id,
+      },
+    });
+  }
+
+  private async handleRemovedRecords(
+    existingMap: Map<string, any>,
+    newNames: Set<string>,
+  ) {
+    const removedNames = [...existingMap.keys()].filter(
       (name) => !newNames.has(name),
     );
-
-    const batches = this.createBatches(records, this.batchSize);
-    for (const batch of batches) {
-      const upserts = batch
-        .map((record) => {
-          const normalizedData = this.normalizeRecord(record);
-          const dataHash = this.generateHash(normalizedData);
-
-          const existingRecord = existingMap.get(normalizedData.name);
-
-          if (existingRecord) {
-            if (existingRecord.dataHash === dataHash) {
-              return null; // Skip if no changes
-            }
-
-            // Update existing record
-            return this.prisma.organization
-              .update({
-                where: { id: existingRecord.id },
-                data: { ...normalizedData, dataHash },
-              })
-              .then(() =>
-                this.prisma.organizationChange.create({
-                  data: {
-                    type: 'UPDATED',
-                    oldData: existingRecord,
-                    newData: normalizedData as unknown as Prisma.InputJsonValue,
-                    organizationId: existingRecord.id,
-                  },
-                }),
-              );
-          }
-
-          // Create new record
-          return this.prisma.organization
-            .create({
-              data: { ...normalizedData, dataHash },
-            })
-            .then((createdRecord) =>
-              this.prisma.organizationChange.create({
-                data: {
-                  type: 'ADDED',
-                  newData: normalizedData as unknown as Prisma.InputJsonValue,
-                  organizationId: createdRecord.id,
-                },
-              }),
-            );
-        })
-        .filter(Boolean);
-
-      await Promise.all(upserts);
-      this.logger.log(`Processed batch of ${upserts.length} records...`);
-    }
-
-    // Handle removed records
-    for (const name of removedNames) {
-      const existingRecord = existingMap.get(name);
-      if (existingRecord) {
-        await this.prisma.organizationChange.create({
-          data: {
-            type: 'REMOVED',
-            oldData: existingRecord,
-            organizationId: existingRecord.id,
-          },
-        });
-        await this.prisma.organization.delete({
-          where: { id: existingRecord.id },
-        });
-        this.logger.log(`Removed organization: ${name}`);
-      }
-    }
-
-    this.logger.log(`Processed ${records.length} records into the database.`);
+    await Promise.all(
+      removedNames.map(async (name) => {
+        const existingRecord = existingMap.get(name);
+        if (existingRecord) {
+          await this.prisma.organizationChange.create({
+            data: {
+              type: 'REMOVED',
+              oldData: existingRecord,
+              organizationId: existingRecord.id,
+            },
+          });
+          await this.prisma.organization.delete({
+            where: { id: existingRecord.id },
+          });
+          this.logger.log(`Removed organization: ${name}`);
+        }
+      }),
+    );
   }
 
   private createBatches(
@@ -179,18 +205,3 @@ export class ScraperService implements OnModuleInit {
     };
   }
 }
-
-// private normalizeRecord(record: OrganizationRecord): OrganizationRecord {
-//   return {
-//     name: String(record['name']).trim(),
-//     townCity:
-//       typeof record['townCity'] === 'string' ? record['townCity'].trim() : '',
-//     county:
-//       typeof record['county'] === 'string' ? record['county'].trim() : '',
-//     typeRating:
-//       typeof record['typeRating'] === 'string'
-//         ? record['typeRating'].trim()
-//         : '',
-//     route: typeof record['route'] === 'string' ? record['route'].trim() : '',
-//   };
-// }
