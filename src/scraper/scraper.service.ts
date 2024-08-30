@@ -17,7 +17,10 @@ export class ScraperService implements OnModuleInit {
     this.logger.debug(
       'Module initialization: Starting CSV download and processing',
     );
+    const startTime = Date.now();
     await this.downloadAndProcessCSV();
+    const endTime = Date.now();
+    this.logExecutionTime(startTime, endTime);
   }
 
   async downloadAndProcessCSV() {
@@ -30,6 +33,7 @@ export class ScraperService implements OnModuleInit {
       this.logger.debug(`Parsed ${records.length} records from CSV`);
 
       await this.processRecords(records);
+      await this.logFinalRecordCount();
     } catch (error) {
       this.logger.error('Failed to download or process CSV:', error);
     }
@@ -128,7 +132,7 @@ export class ScraperService implements OnModuleInit {
     normalizedData: OrganizationRecord,
     dataHash: string,
   ) {
-    await this.prisma.organization.upsert({
+    const createdRecord = await this.prisma.organization.upsert({
       where: { name: normalizedData.name },
       create: { ...normalizedData, dataHash },
       update: { ...normalizedData, dataHash },
@@ -138,9 +142,7 @@ export class ScraperService implements OnModuleInit {
       data: {
         type: 'ADDED',
         newData: normalizedData as unknown as Prisma.InputJsonValue,
-        organizationId: (await this.prisma.organization.findUnique({
-          where: { name: normalizedData.name },
-        }))!.id,
+        organizationId: createdRecord.id,
       },
     });
   }
@@ -203,5 +205,18 @@ export class ScraperService implements OnModuleInit {
           : '',
       route: typeof record['route'] === 'string' ? record['route'].trim() : '',
     };
+  }
+
+  private async logFinalRecordCount() {
+    const count = await this.prisma.organization.count();
+    this.logger.log(`Total records in the organization table: ${count}`);
+  }
+
+  private logExecutionTime(startTime: number, endTime: number) {
+    const durationMs = endTime - startTime;
+    const durationSec = (durationMs / 1000).toFixed(2);
+    this.logger.log(
+      `Execution time: ${durationMs} ms (${durationSec} seconds)`,
+    );
   }
 }
